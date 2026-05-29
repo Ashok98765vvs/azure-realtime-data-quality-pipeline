@@ -1,0 +1,131 @@
+{
+  "name": "DataQualityPipeline",
+  "properties": {
+    "description": "Azure Data Factory pipeline for Real-Time Data Quality and Anomaly Detection. Orchestrates Bronze ingestion, Silver validation, and Gold anomaly detection.",
+    "activities": [
+      {
+        "name": "BronzeIngestion",
+        "description": "Ingest raw stock market data from Event Hub to ADLS Gen2 Bronze Delta layer",
+        "type": "DatabricksNotebook",
+        "dependsOn": [],
+        "policy": {
+          "timeout": "0.01:00:00",
+          "retry": 2,
+          "retryIntervalInSeconds": 30
+        },
+        "typeProperties": {
+          "notebookPath": "/Pipelines/bronze_ingestion",
+          "baseParameters": {
+            "config_path": "/dbfs/configs/pipeline_config.yaml",
+            "source_mode": "eventhub"
+          }
+        },
+        "linkedServiceName": {
+          "referenceName": "AzureDatabricks",
+          "type": "LinkedServiceReference"
+        }
+      },
+      {
+        "name": "SilverDataQuality",
+        "description": "Validate and cleanse Bronze data, quarantine failed records, compute DQ score",
+        "type": "DatabricksNotebook",
+        "dependsOn": [
+          {
+            "activity": "BronzeIngestion",
+            "dependencyConditions": ["Succeeded"]
+          }
+        ],
+        "policy": {
+          "timeout": "0.02:00:00",
+          "retry": 1,
+          "retryIntervalInSeconds": 60
+        },
+        "typeProperties": {
+          "notebookPath": "/Pipelines/silver_data_quality",
+          "baseParameters": {
+            "config_path": "/dbfs/configs/pipeline_config.yaml"
+          }
+        },
+        "linkedServiceName": {
+          "referenceName": "AzureDatabricks",
+          "type": "LinkedServiceReference"
+        }
+      },
+      {
+        "name": "GoldAnomalyDetection",
+        "description": "Run Z-score and IQR anomaly detection, generate DQ scorecards for Power BI",
+        "type": "DatabricksNotebook",
+        "dependsOn": [
+          {
+            "activity": "SilverDataQuality",
+            "dependencyConditions": ["Succeeded"]
+          }
+        ],
+        "policy": {
+          "timeout": "0.02:00:00",
+          "retry": 1,
+          "retryIntervalInSeconds": 60
+        },
+        "typeProperties": {
+          "notebookPath": "/Pipelines/gold_anomaly_detection",
+          "baseParameters": {
+            "config_path": "/dbfs/configs/pipeline_config.yaml"
+          }
+        },
+        "linkedServiceName": {
+          "referenceName": "AzureDatabricks",
+          "type": "LinkedServiceReference"
+        }
+      },
+      {
+        "name": "NotifyOnFailure",
+        "description": "Send alert email on pipeline failure",
+        "type": "WebActivity",
+        "dependsOn": [
+          {
+            "activity": "BronzeIngestion",
+            "dependencyConditions": ["Failed"]
+          },
+          {
+            "activity": "SilverDataQuality",
+            "dependencyConditions": ["Failed"]
+          },
+          {
+            "activity": "GoldAnomalyDetection",
+            "dependencyConditions": ["Failed"]
+          }
+        ],
+        "typeProperties": {
+          "url": "${LOGIC_APP_ALERT_URL}",
+          "method": "POST",
+          "body": {
+            "pipelineName": "@pipeline().Pipeline",
+            "runId": "@pipeline().RunId",
+            "status": "FAILED",
+            "triggerTime": "@pipeline().TriggerTime"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "environment": {
+        "type": "string",
+        "defaultValue": "production"
+      },
+      "source_mode": {
+        "type": "string",
+        "defaultValue": "eventhub"
+      }
+    },
+    "annotations": [
+      "data-quality",
+      "medallion-architecture",
+      "anomaly-detection",
+      "pyspark",
+      "delta-lake"
+    ],
+    "folder": {
+      "name": "DataQuality"
+    }
+  }
+}
