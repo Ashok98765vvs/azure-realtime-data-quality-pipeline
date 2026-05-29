@@ -1,0 +1,33 @@
+# Azure Real-Time Data Quality Pipeline - Python Dependencies
+# Install with: pip install -r requirements.txt
+
+# Core PySpark & Delta Lake
+pyspark==3.4.1
+delta-spark==2.4.0
+
+# Azure SDK
+azure-eventhub==5.11.3
+azure-storage-file-datalake==12.14.0
+azure-identity==1.14.1
+azure-mgmt-datafactory==3.1.0
+
+# Data Processing
+pandas==2.1.0
+numpy==1.24.4
+pyarrow==12.0.1
+
+# Configuration
+pyyaml==6.0.1
+python-dotenv==1.0.0
+
+# Testing
+pytest==7.4.0
+pytest-mock==3.11.1
+
+# Logging & Monitoring
+structlog==23.1.0
+
+# Linting & Formatting (dev)
+black==23.7.0
+flake8==6.1.0
+mypy==1.5.1
