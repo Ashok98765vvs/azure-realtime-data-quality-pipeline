@@ -1,0 +1,95 @@
+# =============================================================================
+# Pipeline Configuration
+# Azure Real-Time Data Quality & Anomaly Detection Pipeline
+# =============================================================================
+# Copy this file and set actual values via environment variables or Azure Key Vault
+# =============================================================================
+
+# Pipeline metadata
+pipeline:
+  name: azure-realtime-data-quality-pipeline
+  version: "1.0.0"
+  environment: development  # development | staging | production
+
+# Source mode: csv (local testing) or eventhub (production)
+source_mode: csv
+
+# Azure Event Hub configuration (production)
+event_hub:
+  name: stock-market-feed
+  namespace: your-eventhub-namespace
+  connection_string: "${EVENTHUB_CONNECTION_STRING}"  # Set via env var
+  consumer_group: "$Default"
+  max_events_per_trigger: 10000
+
+# Storage paths (ADLS Gen2)
+storage:
+  account_name: your-adls-account
+  container: delta-lake
+
+  # Bronze layer - raw ingestion
+  bronze_path: abfss://delta-lake@your-adls-account.dfs.core.windows.net/bronze/stock_market
+
+  # Silver layer - validated data
+  silver_path: abfss://delta-lake@your-adls-account.dfs.core.windows.net/silver/stock_market
+
+  # Gold layer - anomaly detection results
+  gold_path: abfss://delta-lake@your-adls-account.dfs.core.windows.net/gold/anomaly_records
+
+  # Gold scorecard
+  scorecard_path: abfss://delta-lake@your-adls-account.dfs.core.windows.net/gold/dq_scorecard
+
+  # Quarantine - failed records
+  quarantine_path: abfss://delta-lake@your-adls-account.dfs.core.windows.net/quarantine/stock_market
+
+  # Sample data path (local testing only)
+  sample_data_path: data/sample_stock_data.csv
+
+# Azure Synapse Analytics
+synapse:
+  workspace_name: your-synapse-workspace
+  sql_pool: your-sql-pool
+  database: DataQualityDB
+
+# Azure Data Factory
+data_factory:
+  resource_group: your-resource-group
+  factory_name: your-adf-name
+  pipeline_name: DataQualityPipeline
+  trigger_schedule: "0 */6 * * *"  # Every 6 hours
+
+# Data Quality thresholds
+quality:
+  min_dq_score: 85.0            # Alert if DQ score drops below this
+  max_anomaly_rate_pct: 5.0     # Alert if anomaly rate exceeds this %
+  max_quarantine_rate_pct: 10.0 # Alert if quarantine rate exceeds this %
+  zscore_threshold: 3.0         # Z-score threshold for anomaly detection
+  iqr_multiplier: 1.5           # IQR multiplier for anomaly detection
+
+# Valid tickers (business rule validation)
+valid_tickers:
+  - AAPL
+  - MSFT
+  - GOOGL
+  - AMZN
+  - TSLA
+  - META
+  - NVDA
+  - AMD
+  - NFLX
+  - BABA
+
+# Spark configuration
+spark:
+  app_name: AzureDataQualityPipeline
+  executor_memory: 4g
+  executor_cores: 2
+  num_executors: 4
+  shuffle_partitions: 200
+  delta_optimize_write: true
+  delta_auto_compact: true
+
+# Logging
+logging:
+  level: INFO  # DEBUG | INFO | WARNING | ERROR
+  format: "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
