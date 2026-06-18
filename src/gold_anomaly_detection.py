@@ -1,173 +1,110 @@
-"""
-Gold Layer - Anomaly Detection & Data Quality Scorecards
-Azure Real-Time Data Quality & Anomaly Detection Pipeline
-
-Detects price/volume anomalies using Z-score and IQR methods.
-Generates DQ scorecards and writes Gold aggregations for Power BI.
-"""
-
-import uuid
 from pyspark.sql import SparkSession, DataFrame
-from pyspark.sql.functions import (
-    col, avg, stddev, abs as spark_abs, lit, current_timestamp,
-    percentile_approx, when, count, round as spark_round,
-    to_date, date_format
-)
+from pyspark.sql import functions as F
 from pyspark.sql.window import Window
-from delta.tables import DeltaTable
-from utils.logger import get_logger
-import yaml
-
-logger = get_logger(__name__)
-
-Z_SCORE_THRESHOLD  = 3.0
-IQR_MULTIPLIER     = 1.5
 
 
-# ─── Anomaly Detection ────────────────────────────────────────────────────
-
-def detect_zscore_anomalies(df: DataFrame) -> DataFrame:
+def get_spark(app_name: str = "gold_anomaly_detection") -> SparkSession:
     """
-    Detect anomalies using Z-score method.
-    Records with |z_score| > Z_SCORE_THRESHOLD are flagged.
-    """
-    window = Window.partitionBy("ticker")
-
-    df = df.withColumn("mean_close",   avg(col("close_price")).over(window)) \
-           .withColumn("stddev_close", stddev(col("close_price")).over(window)) \
-           .withColumn("mean_volume",  avg(col("volume").cast("double")).over(window)) \
-           .withColumn("stddev_volume",stddev(col("volume").cast("double")).over(window))
-
-    df = df.withColumn(
-        "zscore_price",
-        when(col("stddev_close") > 0,
-             spark_abs((col("close_price") - col("mean_close")) / col("stddev_close"))
-        ).otherwise(lit(0.0))
-    ).withColumn(
-        "zscore_volume",
-        when(col("stddev_volume") > 0,
-             spark_abs((col("volume").cast("double") - col("mean_volume")) / col("stddev_volume"))
-        ).otherwise(lit(0.0))
-    )
-
-    return df.withColumn(
-        "is_price_anomaly",  col("zscore_price")  > Z_SCORE_THRESHOLD
-    ).withColumn(
-        "is_volume_anomaly", col("zscore_volume") > Z_SCORE_THRESHOLD
-    ).withColumn(
-        "is_anomaly",
-        col("is_price_anomaly") | col("is_volume_anomaly")
-    ).withColumn(
-        "anomaly_method", lit("Z-Score")
-    )
-
-
-def detect_iqr_anomalies(df: DataFrame) -> DataFrame:
-    """
-    Detect anomalies using IQR (Interquartile Range) method per ticker.
-    Records outside [Q1 - 1.5*IQR, Q3 + 1.5*IQR] are flagged.
-    """
-    window = Window.partitionBy("ticker")
-
-    df = df.withColumn("q1_price", percentile_approx(col("close_price"), 0.25).over(window)) \
-           .withColumn("q3_price", percentile_approx(col("close_price"), 0.75).over(window))
-
-    df = df.withColumn("iqr_price", col("q3_price") - col("q1_price")) \
-           .withColumn("lower_bound", col("q1_price") - IQR_MULTIPLIER * col("iqr_price")) \
-           .withColumn("upper_bound", col("q3_price") + IQR_MULTIPLIER * col("iqr_price"))
-
-    return df.withColumn(
-        "is_iqr_anomaly",
-        (col("close_price") < col("lower_bound")) | (col("close_price") > col("upper_bound"))
-    ).withColumn(
-        "anomaly_method",
-        when(col("is_anomaly") | col("is_iqr_anomaly"), lit("Z-Score + IQR")).otherwise(lit("None"))
-    ).withColumn(
-        "is_anomaly",
-        col("is_anomaly") | col("is_iqr_anomaly")
-    )
-
-
-# ─── Scorecard Generation ───────────────────────────────────────────────────
-
-def generate_dq_scorecard(df: DataFrame) -> DataFrame:
-    """
-    Generate daily Data Quality Scorecard per ticker and source.
-    Aggregates anomaly rates, validity scores, and volumes.
+    Create or get a SparkSession with Delta enabled.
     """
     return (
-        df.groupBy(
-            to_date(col("trade_date")).alias("report_date"),
-            col("ticker"),
-            col("source_system")
-        ).agg(
-            count("*").alias("total_records"),
-            count(when(col("is_anomaly") == True,  1)).alias("anomaly_count"),
-            count(when(col("is_anomaly") == False, 1)).alias("clean_count"),
-            spark_round(avg(col("close_price")), 2).alias("avg_close_price"),
-            spark_round(avg(col("volume").cast("double")), 0).alias("avg_volume"),
-            spark_round(
-                (count(when(col("is_anomaly") == False, 1)) / count("*")) * 100, 2
-            ).alias("dq_score")
-        ).withColumn("scorecard_generated_at", current_timestamp())
+        SparkSession.builder.appName(app_name)
+        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+        .config(
+            "spark.sql.catalog.spark_catalog",
+            "org.apache.spark.sql.delta.catalog.DeltaCatalog",
+        )
+        .getOrCreate()
     )
 
 
-# ─── Gold Write Logic ──────────────────────────────────────────────────────
-
-def write_gold(df: DataFrame, path: str, partition_cols: list = None):
-    """Write dataframe to Gold Delta layer."""
-    writer = df.write.format("delta").mode("overwrite")
-    if partition_cols:
-        writer = writer.partitionBy(*partition_cols)
-    writer.save(path)
-    logger.info("Gold write complete: %s | Records: %d", path, df.count())
+def read_silver_table(spark: SparkSession, silver_path: str) -> DataFrame:
+    """
+    Read the curated Silver-level data (clean records only) from Delta.
+    Expected columns (example): symbol, event_time, price, volume, ...
+    """
+    return spark.read.format("delta").load(silver_path)
 
 
-# ─── Main Pipeline ────────────────────────────────────────────────────────────
+def detect_price_anomalies(df: DataFrame, z_threshold: float = 3.0) -> DataFrame:
+    """
+    Perform simple z-score based anomaly detection on price per symbol.
+    For each symbol, compute mean/StdDev(price), then flag rows whose
+    price is more than z_threshold standard deviations from the mean.
 
-def run_gold_pipeline(config_path: str):
-    """Main entry point for Gold anomaly detection pipeline."""
-    with open(config_path, "r") as f:
-        config = yaml.safe_load(f)
+    z_score = (price - mean_price_symbol) / stddev_price_symbol
+    """
+    # Window per symbol
+    w_symbol = Window.partitionBy("symbol")
 
-    logger.info("Starting Gold pipeline")
+    stats_df = (
+        df.withColumn("mean_price", F.mean("price").over(w_symbol))
+        .withColumn("std_price", F.stddev_pop("price").over(w_symbol))
+    )
 
-    spark = SparkSession.builder.appName("GoldAnomalyDetection") \
-        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension") \
-        .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog") \
-        .getOrCreate()
+    # Avoid division by zero: if std is null/0, z_score will be null
+    stats_df = stats_df.withColumn(
+        "z_score",
+        F.when(F.col("std_price").isNull() | (F.col("std_price") == 0), None).otherwise(
+            (F.col("price") - F.col("mean_price")) / F.col("std_price")
+        ),
+    )
 
-    silver_path    = config["storage"]["silver_path"]
-    gold_path      = config["storage"]["gold_path"]
-    scorecard_path = config["storage"]["scorecard_path"]
+    result_df = (
+        stats_df.withColumn(
+            "is_anomaly",
+            F.when(F.abs(F.col("z_score")) >= z_threshold, F.lit(True)).otherwise(
+                F.lit(False)
+            ),
+        )
+        .withColumn("anomaly_reason", F.when(F.col("is_anomaly"), F.lit("price_zscore")))
+        .withColumn("anomaly_detected_ts", F.current_timestamp())
+    )
 
-    # Read Silver
-    silver_df = spark.read.format("delta").load(silver_path)
-    logger.info("Silver records loaded: %d", silver_df.count())
+    return result_df
 
-    # Anomaly Detection
-    anomaly_df = detect_zscore_anomalies(silver_df)
-    anomaly_df = detect_iqr_anomalies(anomaly_df)
 
-    anomaly_count = anomaly_df.filter(col("is_anomaly") == True).count()
-    logger.info("Anomalies detected: %d", anomaly_count)
+def write_gold_anomalies(
+    df: DataFrame,
+    gold_path: str,
+    mode: str = "overwrite",
+):
+    """
+    Write anomalies (and contextual stats) to a Gold Delta table.
+    In real-world usage, you may switch to 'append' and partition by date.
+    """
+    df.write.format("delta").mode(mode).save(gold_path)
 
-    # Generate Scorecards
-    scorecard_df = generate_dq_scorecard(anomaly_df)
 
-    # Write Gold
-    write_gold(anomaly_df,   gold_path,      ["trade_date", "ticker"])
-    write_gold(scorecard_df, scorecard_path, ["report_date"])
+def run_gold_anomaly_detection():
+    """
+    Entry point:
+    - Read Silver table
+    - Run anomaly detection
+    - Persist to Gold table
+    """
+    import os
 
-    logger.info("Gold pipeline complete.")
+    spark = get_spark()
+
+    silver_path = os.getenv(
+        "SILVER_DELTA_PATH",
+        "abfss://silver@<your-account>.dfs.core.windows.net/stock_events_silver",
+    )
+    gold_path = os.getenv(
+        "GOLD_DELTA_PATH",
+        "abfss://gold@<your-account>.dfs.core.windows.net/stock_price_anomalies",
+    )
+    z_threshold = float(os.getenv("PRICE_Z_THRESHOLD", "3.0"))
+
+    silver_df = read_silver_table(spark, silver_path)
+    anomalies_df = detect_price_anomalies(silver_df, z_threshold=z_threshold)
+
+    # Persist full dataset with anomaly flag (you can also filter only anomalies)
+    write_gold_anomalies(anomalies_df, gold_path=gold_path, mode="overwrite")
+
     spark.stop()
-    return {"anomalies_detected": anomaly_count}
 
 
 if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser(description="Gold Layer Anomaly Detection")
-    parser.add_argument("--config", required=True)
-    args = parser.parse_args()
-    print(run_gold_pipeline(args.config))
+    run_gold_anomaly_detection()
