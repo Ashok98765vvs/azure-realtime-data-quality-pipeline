@@ -1,8 +1,15 @@
 # 🔵 Azure Real-Time Data Quality & Anomaly Detection Pipeline
 
-![Python](https://img.shields.io/badge/Python-3.10-blue) ![PySpark](https://img.shields.io/badge/PySpark-3.4-orange) ![Azure](https://img.shields.io/badge/Azure-Synapse%20%7C%20ADF%20%7C%20ADLS-0078D4) ![Delta Lake](https://img.shields.io/badge/Delta%20Lake-Medallion-green) ![License](https://img.shields.io/badge/License-MIT-yellow)
+![Python](https://img.shields.io/badge/Python-3.10-blue?logo=python&logoColor=white)
+![PySpark](https://img.shields.io/badge/PySpark-3.4-orange?logo=apachespark&logoColor=white)
+![Azure](https://img.shields.io/badge/Azure-Synapse%20%7C%20ADF%20%7C%20ADLS-0078D4?logo=microsoftazure&logoColor=white)
+![Delta Lake](https://img.shields.io/badge/Delta%20Lake-Medallion-green)
+![GitHub Actions](https://img.shields.io/badge/CI%2FCD-GitHub%20Actions-2088FF?logo=githubactions&logoColor=white)
+![License](https://img.shields.io/badge/License-MIT-yellow)
 
 A **production-grade, end-to-end data quality and anomaly detection pipeline** built on the Azure ecosystem using PySpark, Delta Lake (Medallion Architecture), Azure Data Factory, Azure Synapse Analytics, and Power BI.
+
+> 🚀 Built to demonstrate real-world Azure Data Engineering skills — from streaming ingestion to automated anomaly detection and Power BI dashboarding.
 
 ---
 
@@ -10,21 +17,21 @@ A **production-grade, end-to-end data quality and anomaly detection pipeline** b
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                     AZURE DATA PLATFORM                                 │
+│                         AZURE DATA PLATFORM                             │
 │                                                                         │
-│  [Event Hub / Kafka]                                                    │
-│         │                                                               │
-│         ▼                                                               │
-│  ┌─────────────┐    ┌──────────────┐    ┌──────────────┐               │
-│  │   BRONZE    │───▶│    SILVER    │───▶│     GOLD     │               │
-│  │  Raw Ingest │    │ Validated +  │    │  Aggregated  │               │
-│  │  (ADLS Gen2)│    │  Cleansed    │    │  Anomaly     │               │
-│  └─────────────┘    │  (Delta)     │    │  Scorecard   │               │
-│                     └──────────────┘    └──────┬───────┘               │
-│                                                │                        │
-│                                                ▼                        │
-│                                        [Power BI Dashboard]             │
-│                                        [Azure Synapse SQL]              │
+│              [Event Hub / Kafka]                                        │
+│                      │                                                  │
+│                      ▼                                                  │
+│  ┌─────────────┐  ┌──────────────┐  ┌──────────────┐                  │
+│  │   BRONZE    │─▶│    SILVER    │─▶│     GOLD     │                  │
+│  │  Raw Ingest │  │ Validated +  │  │  Aggregated  │                  │
+│  │ (ADLS Gen2) │  │  Cleansed    │  │   Anomaly    │                  │
+│  └─────────────┘  │  (Delta)     │  │  Scorecard   │                  │
+│                   └──────────────┘  └──────┬───────┘                  │
+│                                            │                           │
+│                                            ▼                           │
+│                               [Power BI Dashboard]                     │
+│                               [Azure Synapse SQL]                      │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -43,23 +50,25 @@ azure-realtime-data-quality-pipeline/
 │       └── logger.py                # Centralized logging utility
 │
 ├── sql/
-│   └── quality_checks.sql           # SQL-based data quality checks
+│   └── quality_checks.sql          # SQL-based data quality checks
 │
 ├── azure/
-│   └── adf_pipeline.json            # Azure Data Factory pipeline config
+│   └── adf_pipeline.json           # Azure Data Factory pipeline config
 │
 ├── data/
-│   └── sample_stock_data.csv        # Sample input data for testing
+│   └── sample_stock_data.csv       # Sample input data for testing
 │
 ├── tests/
-│   └── test_pipeline.py             # Unit tests for pipeline components
+│   └── test_pipeline.py            # Unit tests for pipeline components
 │
 ├── config/
-│   └── pipeline_config.yaml         # Pipeline configuration parameters
+│   └── pipeline_config.yaml        # Pipeline configuration parameters
 │
-├── powerbi/
-│   └── dashboard_spec.md            # Power BI dashboard specification
+├── .github/
+│   └── workflows/
+│       └── ci.yml                  # GitHub Actions CI/CD workflow
 │
+├── CHANGELOG.md
 ├── requirements.txt
 ├── .gitignore
 ├── LICENSE
@@ -153,8 +162,8 @@ python src/bronze_ingestion.py --config config/pipeline_config.yaml
 ```bash
 # Deploy ADF pipeline
 az datafactory pipeline create \
-  --resource-group <your-rg> \
-  --factory-name <your-adf> \
+  --resource-group <your-resource-group> \
+  --factory-name <your-adf-name> \
   --name DataQualityPipeline \
   --pipeline @azure/adf_pipeline.json
 ```
@@ -190,14 +199,24 @@ See `powerbi/dashboard_spec.md` for detailed layout and DAX measures.
 - **Idempotent pipeline runs** using Delta Lake MERGE operations
 - **Structured logging** with correlation IDs for debugging
 - **Unit tested** pipeline components with PySpark test utilities
+- **CI/CD pipeline** via GitHub Actions for automated testing on every push
+
+---
+
+## 📄 Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for version history and recent updates.
 
 ---
 
 ## 👤 Author
 
-**Ashok** — Data Engineer | M.S. CS @ Auburn University  
-Stack: Python | PySpark | Azure Synapse | Delta Lake | Power BI  
-GitHub: [@Ashok98765vvs](https://github.com/Ashok98765vvs)
+**Ashok Chowdary** — Data Engineer | B.Tech @ Auburn University Montgomery
+
+Stack: Python | PySpark | Azure Synapse | Delta Lake | ADF | Power BI
+
+[![GitHub](https://img.shields.io/badge/GitHub-Ashok98765vvs-181717?logo=github)](https://github.com/Ashok98765vvs)
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-Connect-0A66C2?logo=linkedin)](https://www.linkedin.com/in/ashok-chowdary-vvs)
 
 ---
 
