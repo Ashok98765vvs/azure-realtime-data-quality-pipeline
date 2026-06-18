@@ -211,7 +211,7 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and recent updates.
 
 ## 👤 Author
 
-**Ashok Chowdary** — Data Engineer | B.Tech @ Auburn University Montgomery
+**Ashok Chowdary** — Data Engineer | M.S. CS @ Auburn University Montgomery
 
 Stack: Python | PySpark | Azure Synapse | Delta Lake | ADF | Power BI
 
