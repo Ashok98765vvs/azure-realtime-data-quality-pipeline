@@ -80,7 +80,6 @@ def write_to_delta_bronze(
     """
     Write the streaming Bronze DataFrame to Delta with exactly-once semantics.
     """
-
     (
         df.writeStream.format("delta")
         .option("checkpointLocation", checkpoint_path)
@@ -97,11 +96,17 @@ def run_bronze_ingestion():
     """
     import os
     import uuid
+    from utils.logger import get_logger  # keep logging consistent with Silver/Gold
+
+    logger = get_logger(__name__)
 
     spark = get_spark()
 
     eh_connection_string = os.getenv("EVENT_HUB_CONN_STRING")
-    bronze_path = os.getenv("BRONZE_DELTA_PATH", "abfss://bronze@<your-account>.dfs.core.windows.net/stock_events")
+    bronze_path = os.getenv(
+        "BRONZE_DELTA_PATH",
+        "abfss://bronze@<your-account>.dfs.core.windows.net/stock_events",
+    )
     checkpoint_path = os.getenv(
         "BRONZE_CHECKPOINT_PATH",
         "abfss://bronze@<your-account>.dfs.core.windows.net/checkpoints/bronze_ingestion",
@@ -111,6 +116,8 @@ def run_bronze_ingestion():
         raise ValueError("EVENT_HUB_CONN_STRING environment variable is not set")
 
     run_id = str(uuid.uuid4())
+    logger.info("Starting Bronze ingestion. run_id=%s", run_id)
+    logger.info("Bronze path: %s | Checkpoint: %s", bronze_path, checkpoint_path)
 
     raw_df = read_from_eventhub(spark, eh_connection_string)
     bronze_df = enrich_bronze(raw_df, run_id)
@@ -121,6 +128,7 @@ def run_bronze_ingestion():
         checkpoint_path=checkpoint_path,
     )
 
+    logger.info("Bronze ingestion streaming query started.")
     spark.streams.awaitAnyTermination()
 
 
