@@ -1,131 +1,128 @@
-"""
-Bronze Layer - Raw Data Ingestion
-Azure Real-Time Data Quality & Anomaly Detection Pipeline
-
-Ingests raw streaming data from Azure Event Hub / Kafka
-and writes to ADLS Gen2 in Delta format (Bronze layer).
-"""
-
-import argparse
-import uuid
-from datetime import datetime
-from pyspark.sql import SparkSession
-from pyspark.sql.functions import (
-    col, current_timestamp, lit, to_timestamp
-)
-from pyspark.sql.types import (
-    StructType, StructField, StringType, DoubleType,
-    LongType, TimestampType
-)
-from utils.logger import get_logger
-import yaml
-
-logger = get_logger(__name__)
+from pyspark.sql import SparkSession, DataFrame
+from pyspark.sql.functions import current_timestamp, lit, col
+from pyspark.sql.types import StructType, StructField, StringType, DoubleType, TimestampType
 
 
-RAW_SCHEMA = StructType([
-    StructField("ticker",        StringType(),    True),
-    StructField("open_price",    DoubleType(),    True),
-    StructField("close_price",   DoubleType(),    True),
-    StructField("high_price",    DoubleType(),    True),
-    StructField("low_price",     DoubleType(),    True),
-    StructField("volume",        LongType(),      True),
-    StructField("trade_date",    StringType(),    True),
-    StructField("source_system", StringType(),    True),
-])
-
-
-def get_spark_session(app_name: str = "BronzeIngestion") -> SparkSession:
-    """Initialize a Spark session with Delta Lake support."""
+def get_spark(app_name: str = "bronze_ingestion") -> SparkSession:
+    """
+    Create or get an existing SparkSession with basic configs for Delta.
+    """
     return (
-        SparkSession.builder
-        .appName(app_name)
+        SparkSession.builder.appName(app_name)
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
-        .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
-        .config("spark.databricks.delta.optimizeWrite.enabled", "true")
-        .config("spark.databricks.delta.autoCompact.enabled", "true")
+        .config(
+            "spark.sql.catalog.spark_catalog",
+            "org.apache.spark.sql.delta.catalog.DeltaCatalog",
+        )
         .getOrCreate()
     )
 
 
-def read_from_event_hub(spark: SparkSession, config: dict):
-    """Read streaming data from Azure Event Hub."""
-    eh_config = config["event_hub"]
-    connection_string = eh_config["connection_string"]
-    eh_conf = {
-        "eventhubs.connectionString": spark._jvm.org.apache.spark.eventhubs.EventHubsUtils
-            .encrypt(connection_string),
-        "eventhubs.consumerGroup": eh_config.get("consumer_group", "$Default"),
-        "eventhubs.startingPosition": '{"offset":"-1","seqNo":-1,"enqueuedTime":null,"isInclusive":true}',
-    }
-    logger.info("Connecting to Event Hub: %s", eh_config["name"])
-    return (
-        spark.readStream
-        .format("eventhubs")
-        .options(**eh_conf)
+def get_bronze_schema() -> StructType:
+    """
+    Define the schema for raw stock market events landing in the Bronze layer.
+    Adjust fields if your Event Hub payload changes.
+    """
+    return StructType(
+        [
+            StructField("symbol", StringType(), nullable=False),
+            StructField("event_time", TimestampType(), nullable=False),
+            StructField("price", DoubleType(), nullable=True),
+            StructField("volume", DoubleType(), nullable=True),
+            StructField("source_system", StringType(), nullable=True),
+        ]
+    )
+
+
+def read_from_eventhub(spark: SparkSession, eh_connection_string: str) -> DataFrame:
+    """
+    Read streaming data from Azure Event Hubs into a DataFrame
+    with the expected Bronze schema.
+    """
+    raw_df = (
+        spark.readStream.format("eventhubs")
+        .option("eventhubs.connectionString", eh_connection_string)
         .load()
     )
 
+    # Event Hubs body is in 'body' column as binary; cast/parse as needed.
+    # Here we assume JSON strings in 'body'.
+    from pyspark.sql.functions import from_json
 
-def read_from_csv(spark: SparkSession, path: str):
-    """Read batch data from CSV (for local testing)."""
-    logger.info("Reading CSV from: %s", path)
-    return spark.read.schema(RAW_SCHEMA).option("header", True).csv(path)
+    schema = get_bronze_schema()
+
+    parsed_df = (
+        raw_df.selectExpr("cast(body as string) as json_payload")
+        .select(from_json(col("json_payload"), schema).alias("data"))
+        .select("data.*")
+    )
+
+    return parsed_df
 
 
-def add_bronze_metadata(df, batch_id: str):
-    """Add ingestion metadata columns to the dataframe."""
-    return df.withColumn("ingestion_timestamp", current_timestamp()) \
-             .withColumn("batch_id", lit(batch_id)) \
-             .withColumn("pipeline_version", lit("1.0.0")) \
-             .withColumn("trade_date_ts", to_timestamp(col("trade_date"), "yyyy-MM-dd"))
+def enrich_bronze(df: DataFrame, run_id: str) -> DataFrame:
+    """
+    Add standard Bronze metadata columns for lineage and observability.
+    """
+    return (
+        df.withColumn("ingestion_ts", current_timestamp())
+        .withColumn("run_id", lit(run_id))
+        .withColumn("record_quality", lit("raw"))
+    )
 
 
-def write_to_bronze(df, config: dict, batch_id: str):
-    """Write enriched dataframe to Bronze Delta table in ADLS Gen2."""
-    bronze_path = config["storage"]["bronze_path"]
-    logger.info("Writing to Bronze layer: %s", bronze_path)
-
-    enriched_df = add_bronze_metadata(df, batch_id)
+def write_to_delta_bronze(
+    df: DataFrame,
+    output_path: str,
+    checkpoint_path: str,
+    trigger_interval: str = "30 seconds",
+):
+    """
+    Write the streaming Bronze DataFrame to Delta with exactly-once semantics.
+    """
 
     (
-        enriched_df.write
-        .format("delta")
-        .mode("append")
-        .partitionBy("trade_date", "source_system")
-        .save(bronze_path)
+        df.writeStream.format("delta")
+        .option("checkpointLocation", checkpoint_path)
+        .outputMode("append")
+        .trigger(processingTime=trigger_interval)
+        .start(output_path)
     )
-    logger.info("Bronze write complete. Batch ID: %s", batch_id)
-    return enriched_df.count()
 
 
-def run_bronze_pipeline(config_path: str):
-    """Main entry point for Bronze ingestion pipeline."""
-    with open(config_path, "r") as f:
-        config = yaml.safe_load(f)
+def run_bronze_ingestion():
+    """
+    Entry point for Bronze ingestion.
+    Reads from Event Hub, enriches with metadata, and writes to Delta.
+    """
+    import os
+    import uuid
 
-    batch_id = str(uuid.uuid4())
-    logger.info("Starting Bronze ingestion. Batch ID: %s", batch_id)
+    spark = get_spark()
 
-    spark = get_spark_session()
+    eh_connection_string = os.getenv("EVENT_HUB_CONN_STRING")
+    bronze_path = os.getenv("BRONZE_DELTA_PATH", "abfss://bronze@<your-account>.dfs.core.windows.net/stock_events")
+    checkpoint_path = os.getenv(
+        "BRONZE_CHECKPOINT_PATH",
+        "abfss://bronze@<your-account>.dfs.core.windows.net/checkpoints/bronze_ingestion",
+    )
 
-    # Use CSV for local testing; Event Hub for production
-    source_mode = config.get("source_mode", "csv")
-    if source_mode == "eventhub":
-        raw_df = read_from_event_hub(spark, config)
-    else:
-        raw_df = read_from_csv(spark, config["storage"]["sample_data_path"])
+    if not eh_connection_string:
+        raise ValueError("EVENT_HUB_CONN_STRING environment variable is not set")
 
-    record_count = write_to_bronze(raw_df, config, batch_id)
-    logger.info("Bronze ingestion complete. Records written: %d", record_count)
+    run_id = str(uuid.uuid4())
 
-    spark.stop()
-    return {"batch_id": batch_id, "records_written": record_count}
+    raw_df = read_from_eventhub(spark, eh_connection_string)
+    bronze_df = enrich_bronze(raw_df, run_id)
+
+    write_to_delta_bronze(
+        bronze_df,
+        output_path=bronze_path,
+        checkpoint_path=checkpoint_path,
+    )
+
+    spark.streams.awaitAnyTermination()
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Bronze Layer Ingestion")
-    parser.add_argument("--config", required=True, help="Path to pipeline_config.yaml")
-    args = parser.parse_args()
-    result = run_bronze_pipeline(args.config)
-    print(f"Pipeline result: {result}")
+    run_bronze_ingestion()
